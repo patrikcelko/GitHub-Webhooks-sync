@@ -1,18 +1,15 @@
-import argparse
 import hashlib
 import hmac
-from http.server import HTTPServer, BaseHTTPRequestHandler
 import json
-import pprint
 import os
-import sys
-import readchar
 import signal
-from enum import Enum
 import subprocess
 import threading
 import time
+from enum import Enum
 from functools import partial
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import readchar
 
 
 class Operation(Enum):
@@ -27,10 +24,10 @@ actual_operation = Operation.HALT
 
 
 def init_config(config_path):
-    config = {}
+    config_loc = {}
     try:
         config_file = open(config_path, 'r')
-        config = json.load(config_file)
+        config_loc = json.load(config_file)
 
         if not config:
             raise ValueError('Loading failed, resulting empty dict.')
@@ -39,7 +36,7 @@ def init_config(config_path):
         quit()
     else:
         config_file.close()
-    return config;
+    return config_loc
 
 
 def signal_handler(signum, frame):
@@ -69,8 +66,8 @@ def signal_handler(signum, frame):
 
 
 class GitHubHandler(BaseHTTPRequestHandler):
-    def __init__(self, config, *args, **kwargs):
-        self.config = config
+    def __init__(self, config_loc, *args, **kwargs):
+        self.config = config_loc
         super().__init__(*args, **kwargs)
 
     def _validate_signature(self, data):
@@ -95,10 +92,10 @@ class GitHubHandler(BaseHTTPRequestHandler):
         if ("whitelist" in self.config and self.config.get("whitelist") is not None and len(
                 self.config.get("whitelist")) != 0):
             actual_parts = self.client_address[0].split(".")
-            if (len(actual_parts) == 4):
+            if len(actual_parts) == 4:
                 for ip in self.config.get("whitelist"):
                     parts = ip.split(".")
-                    if (len(parts) != 4):
+                    if len(parts) != 4:
                         continue
                     for part_index in range(len(parts)):
                         if parts[part_index] == "*" or actual_parts[part_index] == parts[part_index]:
@@ -117,8 +114,8 @@ class GitHubHandler(BaseHTTPRequestHandler):
             self.wfile.write("Invalid signature.".encode(encoding='utf_8'))
             return
 
-        payload = json.loads(post_data.decode('utf-8'))
-        self.handle_payload(payload)
+        json.loads(post_data.decode('utf-8'))
+        self.handle_payload()
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
         self.end_headers()
@@ -126,7 +123,7 @@ class GitHubHandler(BaseHTTPRequestHandler):
 
 
 class ListenerHandler(GitHubHandler):
-    def handle_payload(self, json_payload):
+    def handle_payload(self):
         global actual_operation
         global thread_flag
 
@@ -149,10 +146,12 @@ class ListenerHandler(GitHubHandler):
 
 
 class GitHub(threading.Thread):
-    def __init__(self, config):
+    def __init__(self, config_loc):
+        global actual_operation
+        global thread_flag
         threading.Thread.__init__(self)
         self.name = "GitHub-Handler"
-        self.config = config
+        self.config = config_loc
         self.is_starting = True
 
         try:
@@ -174,7 +173,7 @@ class GitHub(threading.Thread):
         global thread_flag
 
         print("GitHub handler was successfully started.")
-        if (self.is_starting):
+        if self.is_starting:
             git_pull = subprocess.Popen("git pull".split(), preexec_fn=os.setpgrp)
             git_pull.wait()
             print("Successfully pulled latest version.")
@@ -193,10 +192,10 @@ class GitHub(threading.Thread):
 
 
 class OurProgram(threading.Thread):
-    def __init__(self, config):
+    def __init__(self, config_loc):
         threading.Thread.__init__(self)
         self.name = "Program-Thread"
-        self.config = config
+        self.config = config_loc
 
         global actual_operation
         global thread_flag
@@ -223,10 +222,10 @@ class OurProgram(threading.Thread):
 
 
 class Wrapper(threading.Thread):
-    def __init__(self, config, parent_thread):
+    def __init__(self, config_loc, parent_thread):
         threading.Thread.__init__(self)
         self.name = "Wrapper"
-        self.config = config
+        self.config = config_loc
         self.parent_thread = parent_thread
 
     def run(self):
@@ -235,12 +234,12 @@ class Wrapper(threading.Thread):
 
         thread = None
         print("Wrapper successfully started.")
-        while (True):
+        while True:
 
-            if (actual_operation == Operation.KILL):
+            if actual_operation == Operation.KILL:
                 self.parent_thread.kill()
                 thread.kill()
-                break;
+                break
 
             if ((thread is None or not thread.is_alive()) and (
                     actual_operation == Operation.RUN or actual_operation == Operation.RESTART)):
@@ -250,7 +249,7 @@ class Wrapper(threading.Thread):
                     actual_operation == Operation.HALT or actual_operation == Operation.RESTART)):
                 thread.kill()
 
-            if (actual_operation == Operation.RESTART):
+            if actual_operation == Operation.RESTART:
                 thread_flag.acquire()
                 actual_operation = Operation.RUN
                 thread_flag.notify_all()
@@ -264,7 +263,6 @@ config = init_config("./config-sync.json")
 print("Config was successfully loaded.")
 signal.signal(signal.SIGINT, signal_handler)
 
-actual_operation = Operation.HALT
 github_thread = GitHub(config)
 program_thread = Wrapper(config, github_thread)
 
