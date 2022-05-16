@@ -29,21 +29,27 @@ def init_config(config_path):
         config_file = open(config_path, 'r')
         config_loc = json.load(config_file)
 
-        if not config:
-            raise ValueError('Loading failed, resulting empty dict.')
+        if not config_loc:
+            raise ValueError('Loading failed, resulting in an empty dictionary.')
     except BaseException as err:
-        print(f"Was not able to load config: {err}, {type(err)}")
+        print(f"Was not able to load the config: {err}, {type(err)}")
         quit()
     else:
         config_file.close()
     return config_loc
 
 
+def git_pull():
+    git_proc = subprocess.Popen("git pull".split(), preexec_fn=os.setpgrp)
+    git_proc.wait()
+    print("Successfully pulled the latest version.")
+
+
 def signal_handler(signum, frame):
     global actual_operation
     global thread_flag
 
-    print("\nSIGINT was recieved. What do you want to do?")
+    print("\nSIGINT was received, what do you want to do?")
     print("0 - kill wrapper, 1 - restart program, 2 - kill program")
     print("Command: ", end="", flush=True)
 
@@ -60,7 +66,7 @@ def signal_handler(signum, frame):
     elif command == '2':
         actual_operation = Operation.HALT
     else:
-        print("Operation was receieved, however does not match any avalible option.")
+        print("The command does not match any available option.")
     thread_flag.notify_all()
     thread_flag.release()
 
@@ -75,22 +81,22 @@ class GitHubHandler(BaseHTTPRequestHandler):
         if sha_name != 'sha1':
             return False
 
-        mac = hmac.new(str.encode(self.config.get("secret-key")), msg=data, digestmod=hashlib.sha1)
-        return hmac.compare_digest(mac.hexdigest(), signature)
+        mac_key = hmac.new(str.encode(self.config.get("secret-key")), msg=data, digestmod=hashlib.sha1)
+        return hmac.compare_digest(mac_key.hexdigest(), signature)
+
+    def _response_loc(self, code, message):
+        self.send_response(code)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        self.wfile.write(message.encode(encoding='utf_8'))
 
     def do_POST(self):
-        data_length = int(self.headers['Content-Length'])
-        post_data = self.rfile.read(data_length)
-
-        if self.client_address[0] is None:
-            self.send_response(401)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write("Invalid IP address.".encode(encoding='utf_8'))
+        post_data = self.rfile.read(int(self.headers['Content-Length']))
+        if not self.client_address[0]:
+            self._response_loc(401, "Invalid IP address.")
             return
 
-        if ("whitelist" in self.config and self.config.get("whitelist") is not None and len(
-                self.config.get("whitelist")) != 0):
+        if "whitelist" in self.config and self.config.get("whitelist") and len(self.config.get("whitelist")) != 0:
             actual_parts = self.client_address[0].split(".")
             if len(actual_parts) == 4:
                 for ip in self.config.get("whitelist"):
@@ -100,68 +106,59 @@ class GitHubHandler(BaseHTTPRequestHandler):
                     for part_index in range(len(parts)):
                         if parts[part_index] == "*" or actual_parts[part_index] == parts[part_index]:
                             continue
-                        self.send_response(401)
-                        self.send_header('Content-Type', 'application/json')
-                        self.end_headers()
-                        self.wfile.write("Used IP address is not in whitelist.".encode(encoding='utf_8'))
+                        self._response_loc(401, "The used IP address is not in the whitelist.")
                         return
-                print("IP address passed whitelist")
+                print("The IP address passed the whitelist check.")
 
         if not self._validate_signature(post_data):
-            self.send_response(401)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write("Invalid signature.".encode(encoding='utf_8'))
+            self._response_loc(401, "Invalid signature.")
             return
 
-        json.loads(post_data.decode('utf-8'))
-        self.handle_payload()
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
-        self.wfile.write("Wrapper successfully handled hot-swap.".encode(encoding='utf_8'))
+        self.handle_payload(json.loads(post_data.decode('utf-8')))
+        self._response_loc(200, "Wrapper successfully handled hot-swap.")
 
 
 class ListenerHandler(GitHubHandler):
-    def handle_payload(self):
+    def handle_payload(self, payload):
         global actual_operation
         global thread_flag
 
         print("Pull was made on remote repository, starting update.")
+
         thread_flag.acquire()
         actual_operation = Operation.HALT
         thread_flag.notify_all()
         thread_flag.release()
-        time.sleep(1)
 
-        git_pull = subprocess.Popen("git pull".split(), preexec_fn=os.setpgrp)
-        git_pull.wait()
-        print("Successfully pulled latest version.")
+        time.sleep(0.5)
+        git_pull()
 
         thread_flag.acquire()
         actual_operation = Operation.RESTART
         thread_flag.notify_all()
         thread_flag.release()
-        print("Successfully made hot swap.")
+        print("Wrapper successfully made a hot-swap.")
 
 
 class GitHub(threading.Thread):
     def __init__(self, config_loc):
-        global actual_operation
-        global thread_flag
         threading.Thread.__init__(self)
         self.name = "GitHub-Handler"
         self.config = config_loc
         self.is_starting = True
 
+        global actual_operation
+        global thread_flag
+
         try:
             if "secret-key" not in self.config:
-                raise ValueError("Was not able to found secret-key in config")
+                raise ValueError("Was not able to find the secret key in the config.")
 
             server_handler = partial(ListenerHandler, self.config)
             self.server = HTTPServer((self.config.get("ip-address"), int(self.config.get("port"))), server_handler)
         except BaseException as err:
-            print(f"Was not able to start GitHub listener: {err}, {type(err)}")
+            print(f"Was not able to start a GitHub listener: {err}, {type(err)}")
+
             thread_flag.acquire()
             actual_operation = Operation.KILL
             thread_flag.notify_all()
@@ -174,17 +171,13 @@ class GitHub(threading.Thread):
 
         print("GitHub handler was successfully started.")
         if self.is_starting:
-            git_pull = subprocess.Popen("git pull".split(), preexec_fn=os.setpgrp)
-            git_pull.wait()
-            print("Successfully pulled latest version.")
-            self.is_starting = False
+            git_pull()
 
             thread_flag.acquire()
             actual_operation = Operation.RESTART
             thread_flag.notify_all()
             thread_flag.release()
             time.sleep(1)
-
         self.server.serve_forever()
 
     def kill(self):
@@ -201,7 +194,8 @@ class OurProgram(threading.Thread):
         global thread_flag
 
         if not ("run-command" in self.config):
-            print("Was not able to found key run-command.")
+            print("Was not able to find the key run-command.")
+
             thread_flag.acquire()
             actual_operation = Operation.KILL
             thread_flag.notify_all()
@@ -211,12 +205,12 @@ class OurProgram(threading.Thread):
         self.process = subprocess.Popen(self.config.get("run-command").split(), preexec_fn=os.setpgrp)
 
     def run(self):
-        print("Wrapper successfull started program.")
+        print("Wrapper successfully started the program.")
         self.process.wait()
-        print("Program thread died.")
+        print("The program thread died.")
 
     def kill(self):
-        print("Wrapper successfully terminatet program.")
+        print("Wrapper successfully terminated the program.")
         self.process.send_signal(signal.SIGUSR1)
         self.process.kill()
 
@@ -235,18 +229,17 @@ class Wrapper(threading.Thread):
         thread = None
         print("Wrapper successfully started.")
         while True:
-
             if actual_operation == Operation.KILL:
                 self.parent_thread.kill()
                 thread.kill()
                 break
 
-            if ((thread is None or not thread.is_alive()) and (
-                    actual_operation == Operation.RUN or actual_operation == Operation.RESTART)):
-                thread = OurProgram(config)
+            if not (thread and thread.is_alive()) and \
+                    (actual_operation == Operation.RUN or actual_operation == Operation.RESTART):
+                thread = OurProgram(self.config)
                 thread.start()
-            elif (thread is not None and thread.is_alive() and (
-                    actual_operation == Operation.HALT or actual_operation == Operation.RESTART)):
+            elif thread and thread.is_alive() and \
+                    (actual_operation == Operation.HALT or actual_operation == Operation.RESTART):
                 thread.kill()
 
             if actual_operation == Operation.RESTART:
@@ -256,19 +249,23 @@ class Wrapper(threading.Thread):
                 thread_flag.release()
 
             time.sleep(0.2)
-        print("Wrapper thread died.")
+        print("The wrapper thread died.")
 
 
-config = init_config("./config-sync.json")
-print("Config was successfully loaded.")
-signal.signal(signal.SIGINT, signal_handler)
+def main():
+    config = init_config("./config-sync.json")
+    print("Config was successfully loaded.")
+    signal.signal(signal.SIGINT, signal_handler)
 
-github_thread = GitHub(config)
-program_thread = Wrapper(config, github_thread)
+    github_thread = GitHub(config)
+    program_thread = Wrapper(config, github_thread)
 
-program_thread.start()
-github_thread.start()
-program_thread.join()
-github_thread.join()
+    program_thread.start()
+    github_thread.start()
+    program_thread.join()
+    github_thread.join()
 
-print("All operations ended.")
+    print("All operations ended.")
+
+
+main()
