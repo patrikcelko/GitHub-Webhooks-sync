@@ -1,0 +1,9 @@
+{
+	"ip-address": "localhost",
+	"port": "12345",
+	"run-command": "",
+	"secret-key": "",
+	"whitelist": [
+		"140.82.119.*"	
+	]
+}
