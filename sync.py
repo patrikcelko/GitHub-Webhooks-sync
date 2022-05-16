@@ -58,7 +58,7 @@ def signal_handler(signum, frame):
 
     thread_flag.acquire()
     if command == '0':
-        print("Killing wrapper...")
+        print("[Wrapper] Killing wrapper...")
         actual_operation = Operation.KILL
         quit()
     elif command == '1':
